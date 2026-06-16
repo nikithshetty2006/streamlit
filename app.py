@@ -1,56 +1,155 @@
+Here's a notebook named app.py
 import streamlit as st
 import os
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+import tempfile
 
-st.set_page_config(page_title="Intelligent Lecture Notes Assistant", layout="centered")
+st.set_page_config(page_title="Intelligent Lecture Notes Assistant")
 st.title("📚 Intelligent Lecture Notes Assistant")
 
-# Fetch API key
-groq_api_key = os.environ.get('GROQ_API_KEY')
-if not groq_api_key:
-    groq_api_key = st.sidebar.text_input("Enter your Groq API Key", type="password")
+# ── Session state init ──────────────────────────────────────────────
+if "chains" not in st.session_state:
+    st.session_state.chains = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-if groq_api_key:
-    llm = ChatGroq(groq_api_key=groq_api_key, model_name="mixtral-8x7b-32768")
-    embeddings = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
+# ── Sidebar: setup ──────────────────────────────────────────────────
+with st.sidebar:
+    st.header("Setup")
+    groq_api_key = st.text_input("Groq API Key", type="password")
+    uploaded_files = st.file_uploader("Upload PDF(s)", type="pdf", accept_multiple_files=True)
+    chunk_size = st.selectbox("Chunk size", [500, 1000, 1500], index=1)
+    k = st.selectbox("Chunks to retrieve (k)", [3, 5, 8], index=1)
+    build_btn = st.button("Build Knowledge Base")
 
-    # LOAD THE PRE-BUILT DATABASE (This replaces the PDF uploader)
-    try:
-        vectorstore = FAISS.load_local(
-            ".", 
-            embeddings, 
-            allow_dangerous_deserialization=True # Required by LangChain to load .pkl files
-        )
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-        st.success("Pre-built Vector Database loaded successfully!")
-    except Exception as e:
-        st.error("Could not find the faiss_index folder. Make sure the .faiss and .pkl files are uploaded to GitHub!")
-        st.stop()
-        
-    prompt = ChatPromptTemplate.from_template(
-        """
-        Answer the following question based only on the provided context. 
-        If you do not know the answer based on the context, say so.
-        
-        Context: {context}
-        Question: {input}
-        """
-    )
-    
-    document_chain = create_stuff_documents_chain(llm, prompt)
-    retrieval_chain = create_retrieval_chain(retriever, document_chain)
-    
-    user_query = st.text_input("Ask a question about the lecture notes:")
-    
-    if user_query:
-        with st.spinner("Analyzing context and generating your answer..."):
-            response = retrieval_chain.invoke({"input": user_query})
-            st.markdown("### 🤖 Answer:")
-            st.write(response["answer"])
+# ── Build chains on button click ────────────────────────────────────
+if build_btn:
+    if not groq_api_key or not uploaded_files:
+        st.sidebar.error("Please provide API key and at least one PDF.")
+    else:
+        with st.spinner("Loading PDFs and building vector store..."):
+            os.environ["GROQ_API_KEY"] = groq_api_key
+            documents = []
+            for uf in uploaded_files:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(uf.read())
+                    tmp_path = tmp.name
+                loader = PyPDFLoader(tmp_path)
+                documents.extend(loader.load())
+
+            splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=200)
+            docs = splitter.split_documents(documents)
+
+            embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            vectorstore = FAISS.from_documents(docs, embeddings)
+            retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+
+            llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=groq_api_key)
+
+            def format_docs(docs):
+                return "\n\n".join(d.page_content for d in docs)
+
+            def make_chain(prompt_template):
+                return (
+                    {"context": retriever | format_docs, "question": lambda x: x}
+                    | prompt_template
+                    | llm
+                    | StrOutputParser()
+                )
+
+            # Your existing prompts (unchanged)
+            qa_prompt = ChatPromptTemplate.from_template("""
+Hello! I'm your Lecture Notes Assistant. Answer using *only* the provided context.
+If I can't find the answer, say: "Sorry, I couldn't find this in the lecture notes."
+Context: {context}
+Question: {question}
+Answer:""")
+
+            summary_prompt = ChatPromptTemplate.from_template("""
+Give a clear and concise summary of these lecture notes.
+Context: {context}
+Summary:""")
+
+            mcq_prompt = ChatPromptTemplate.from_template("""
+Generate 5 multiple-choice questions (4 options each, mark correct answer).
+Context: {context}
+MCQs:""")
+
+            quiz_prompt = ChatPromptTemplate.from_template("""
+Generate 5 short-answer quiz questions.
+Context: {context}
+Quiz Questions:""")
+
+            viva_prompt = ChatPromptTemplate.from_template("""
+Generate 5 conceptual viva questions that go beyond simple recall.
+Context: {context}
+Viva Questions:""")
+
+            flashcard_prompt = ChatPromptTemplate.from_template("""
+Extract 10 key terms and definitions as 'Term: Definition' on separate lines.
+Context: {context}
+Flashcards:""")
+
+            topic_prompt = ChatPromptTemplate.from_template("""
+Provide a detailed explanation for the given topic using the lecture notes.
+Context: {context}
+Topic: {question}
+Explanation:""")
+
+            st.session_state.chains = {
+                "qa": make_chain(qa_prompt),
+                "summary": make_chain(summary_prompt),
+                "mcq": make_chain(mcq_prompt),
+                "quiz": make_chain(quiz_prompt),
+                "viva": make_chain(viva_prompt),
+                "flashcard": make_chain(flashcard_prompt),
+                "topic": make_chain(topic_prompt),
+            }
+            st.session_state.chat_history = []
+        st.sidebar.success(f"✅ Loaded {len(documents)} pages, {len(docs)} chunks.")
+
+# ── Chat UI ──────────────────────────────────────────────────────────
+if st.session_state.chains:
+    # Render history
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Mode selector + input
+    mode = st.selectbox("Mode", [
+        "Ask a Question", "Summary", "MCQs",
+        "Quiz Questions", "Viva Questions", "Flashcards", "Topic Explanation"
+    ])
+
+    user_input = st.chat_input("Type your question or topic here...")
+
+    if user_input:
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        chains = st.session_state.chains
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                mode_map = {
+                    "Ask a Question":    (chains["qa"],       user_input),
+                    "Summary":           (chains["summary"],  "Generate a summary of the lecture notes."),
+                    "MCQs":              (chains["mcq"],      "Generate MCQs from the key concepts."),
+                    "Quiz Questions":    (chains["quiz"],     "Generate quiz questions from the key concepts."),
+                    "Viva Questions":    (chains["viva"],     "Generate viva questions from the key concepts."),
+                    "Flashcards":        (chains["flashcard"],"Extract key terms and definitions."),
+                    "Topic Explanation": (chains["topic"],    user_input),
+                }
+                chain, query = mode_map[mode]
+                result = chain.invoke(query)
+                st.markdown(result)
+        st.session_state.chat_history.append({"role": "assistant", "content": result})
+
 else:
-    st.sidebar.warning("⚠️ Please provide your Groq API Key to begin.")
+    st.info("👈 Upload PDFs and click **Build Knowledge Base** to get started.")
