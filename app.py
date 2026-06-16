@@ -21,7 +21,7 @@ if "chat_history" not in st.session_state:
 # ── Sidebar: setup ──────────────────────────────────────────────────
 with st.sidebar:
     st.header("Setup")
-    groq_api_key = st.text_input("Groq API Key", type="password")
+    groq_api_key = st.text_input("Groq API Key", type="password").strip()
     uploaded_files = st.file_uploader("Upload PDF(s)", type="pdf", accept_multiple_files=True)
     chunk_size = st.selectbox("Chunk size", [500, 1000, 1500], index=1)
     k = st.selectbox("Chunks to retrieve (k)", [3, 5, 8], index=1)
