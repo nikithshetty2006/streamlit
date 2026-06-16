@@ -13,8 +13,8 @@ st.set_page_config(page_title="Intelligent Lecture Notes Assistant")
 st.title("📚 Intelligent Lecture Notes Assistant")
 
 # ── Session state init ──────────────────────────────────────────────
-if "chains" not in st.session_state:
-    st.session_state.chains = None
+if "chain" not in st.session_state:
+    st.session_state.chain = None
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
@@ -27,7 +27,7 @@ with st.sidebar:
     k = st.selectbox("Chunks to retrieve (k)", [3, 5, 8], index=1)
     build_btn = st.button("Build Knowledge Base")
 
-# ── Build chains on button click ────────────────────────────────────
+# ── Build ONE Master Chain on button click ──────────────────────────
 if build_btn:
     if not groq_api_key or not uploaded_files:
         st.sidebar.error("Please provide API key and at least one PDF.")
@@ -54,99 +54,49 @@ if build_btn:
             def format_docs(docs):
                 return "\n\n".join(d.page_content for d in docs)
 
-            def make_chain(prompt_template):
-                return (
-                    {"context": retriever | format_docs, "question": lambda x: x}
-                    | prompt_template
-                    | llm
-                    | StrOutputParser()
-                )
+            # ONE Master Prompt to handle everything
+            master_prompt = ChatPromptTemplate.from_template("""
+You are an Intelligent Lecture Notes Assistant. 
+Use the following retrieved context from the lecture notes to fulfill the user's request. 
 
-            # Your existing prompts (unchanged)
-            qa_prompt = ChatPromptTemplate.from_template("""
-Hello! I'm your Lecture Notes Assistant. Answer using *only* the provided context.
-If I can't find the answer, say: "Sorry, I couldn't find this in the lecture notes."
+Guidelines:
+- If the user asks for a summary, provide a clear and concise summary of the context.
+- If the user asks for MCQs, quizzes, viva questions, or flashcards, generate them logically based on the context.
+- If the user asks a specific question, answer it using *only* the provided context. 
+- If you cannot find the answer in the context, say: "Sorry, I couldn't find this in the lecture notes."
+
 Context: {context}
-Question: {question}
+
+User Request: {question}
 Answer:""")
 
-            summary_prompt = ChatPromptTemplate.from_template("""
-Give a clear and concise summary of these lecture notes.
-Context: {context}
-Summary:""")
-
-            mcq_prompt = ChatPromptTemplate.from_template("""
-Generate 5 multiple-choice questions (4 options each, mark correct answer).
-Context: {context}
-MCQs:""")
-
-            quiz_prompt = ChatPromptTemplate.from_template("""
-Generate 5 short-answer quiz questions.
-Context: {context}
-Quiz Questions:""")
-
-            viva_prompt = ChatPromptTemplate.from_template("""
-Generate 5 conceptual viva questions that go beyond simple recall.
-Context: {context}
-Viva Questions:""")
-
-            flashcard_prompt = ChatPromptTemplate.from_template("""
-Extract 10 key terms and definitions as 'Term: Definition' on separate lines.
-Context: {context}
-Flashcards:""")
-
-            topic_prompt = ChatPromptTemplate.from_template("""
-Provide a detailed explanation for the given topic using the lecture notes.
-Context: {context}
-Topic: {question}
-Explanation:""")
-
-            st.session_state.chains = {
-                "qa": make_chain(qa_prompt),
-                "summary": make_chain(summary_prompt),
-                "mcq": make_chain(mcq_prompt),
-                "quiz": make_chain(quiz_prompt),
-                "viva": make_chain(viva_prompt),
-                "flashcard": make_chain(flashcard_prompt),
-                "topic": make_chain(topic_prompt),
-            }
+            st.session_state.chain = (
+                {"context": retriever | format_docs, "question": lambda x: x}
+                | master_prompt
+                | llm
+                | StrOutputParser()
+            )
             st.session_state.chat_history = []
         st.sidebar.success(f"✅ Loaded {len(documents)} pages, {len(docs)} chunks.")
 
-# ── Chat UI ──────────────────────────────────────────────────────────
-if st.session_state.chains:
+# ── Pure Chat UI ─────────────────────────────────────────────────────
+if st.session_state.chain:
     # Render history
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Mode selector + input
-    mode = st.selectbox("Mode", [
-        "Ask a Question", "Summary", "MCQs",
-        "Quiz Questions", "Viva Questions", "Flashcards", "Topic Explanation"
-    ])
-
-    user_input = st.chat_input("Type your question or topic here...")
+    # Single chat input handles everything
+    user_input = st.chat_input("Ask a question, or tell me to summarize, create MCQs, etc...")
 
     if user_input:
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        chains = st.session_state.chains
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                mode_map = {
-                    "Ask a Question":    (chains["qa"],       user_input),
-                    "Summary":           (chains["summary"],  "Generate a summary of the lecture notes."),
-                    "MCQs":              (chains["mcq"],      "Generate MCQs from the key concepts."),
-                    "Quiz Questions":    (chains["quiz"],     "Generate quiz questions from the key concepts."),
-                    "Viva Questions":    (chains["viva"],     "Generate viva questions from the key concepts."),
-                    "Flashcards":        (chains["flashcard"],"Extract key terms and definitions."),
-                    "Topic Explanation": (chains["topic"],    user_input),
-                }
-                chain, query = mode_map[mode]
-                result = chain.invoke(query)
+                result = st.session_state.chain.invoke(user_input)
                 st.markdown(result)
         st.session_state.chat_history.append({"role": "assistant", "content": result})
 
