@@ -1,4 +1,3 @@
-Here's a notebook named app.py
 import streamlit as st
 import os
 from langchain_community.document_loaders import PyPDFLoader
@@ -63,7 +62,6 @@ if build_btn:
                     | StrOutputParser()
                 )
 
-            # Your existing prompts (unchanged)
             qa_prompt = ChatPromptTemplate.from_template("""
 Hello! I'm your Lecture Notes Assistant. Answer using *only* the provided context.
 If I can't find the answer, say: "Sorry, I couldn't find this in the lecture notes."
@@ -103,53 +101,70 @@ Topic: {question}
 Explanation:""")
 
             st.session_state.chains = {
-                "qa": make_chain(qa_prompt),
-                "summary": make_chain(summary_prompt),
-                "mcq": make_chain(mcq_prompt),
-                "quiz": make_chain(quiz_prompt),
-                "viva": make_chain(viva_prompt),
-                "flashcard": make_chain(flashcard_prompt),
-                "topic": make_chain(topic_prompt),
+                "qa":       make_chain(qa_prompt),
+                "summary":  make_chain(summary_prompt),
+                "mcq":      make_chain(mcq_prompt),
+                "quiz":     make_chain(quiz_prompt),
+                "viva":     make_chain(viva_prompt),
+                "flashcard":make_chain(flashcard_prompt),
+                "topic":    make_chain(topic_prompt),
             }
             st.session_state.chat_history = []
         st.sidebar.success(f"✅ Loaded {len(documents)} pages, {len(docs)} chunks.")
 
 # ── Chat UI ──────────────────────────────────────────────────────────
-if st.session_state.chains:
-    # Render history
+if st.session_state.chains is not None:
+
+    # Mode selector ABOVE chat input (outside chat_input callback)
+    mode = st.selectbox("Mode", [
+        "Ask a Question", "Summary", "MCQs",
+        "Quiz Questions", "Viva Questions", "Flashcards", "Topic Explanation"
+    ], key="mode_select")
+
+    # Clear chat button
+    if st.button("🗑️ Clear Chat"):
+        st.session_state.chat_history = []
+        st.rerun()
+
+    # Render existing chat history
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Mode selector + input
-    mode = st.selectbox("Mode", [
-        "Ask a Question", "Summary", "MCQs",
-        "Quiz Questions", "Viva Questions", "Flashcards", "Topic Explanation"
-    ])
+    # FIX 1: use a unique key on chat_input so it resets after each submit
+    user_input = st.chat_input("Type your question or topic here...", key="chat_input")
 
-    user_input = st.chat_input("Type your question or topic here...")
-
-    if user_input:
+    if user_input and user_input.strip():  # FIX 2: guard against empty/whitespace input
+        # Append user message
         st.session_state.chat_history.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
 
         chains = st.session_state.chains
-        with st.chat_message("assistant"):
+
+        # FIX 3: resolve chain and query BEFORE rendering, so errors surface cleanly
+        mode_map = {
+            "Ask a Question":    ("qa",        user_input),
+            "Summary":           ("summary",   "Generate a summary of the lecture notes."),
+            "MCQs":              ("mcq",       "Generate MCQs from the key concepts."),
+            "Quiz Questions":    ("quiz",      "Generate quiz questions from the key concepts."),
+            "Viva Questions":    ("viva",      "Generate viva questions from the key concepts."),
+            "Flashcards":        ("flashcard", "Extract key terms and definitions."),
+            "Topic Explanation": ("topic",     user_input),
+        }
+
+        chain_key, query = mode_map[mode]
+        chain = chains[chain_key]
+
+        try:
             with st.spinner("Thinking..."):
-                mode_map = {
-                    "Ask a Question":    (chains["qa"],       user_input),
-                    "Summary":           (chains["summary"],  "Generate a summary of the lecture notes."),
-                    "MCQs":              (chains["mcq"],      "Generate MCQs from the key concepts."),
-                    "Quiz Questions":    (chains["quiz"],     "Generate quiz questions from the key concepts."),
-                    "Viva Questions":    (chains["viva"],     "Generate viva questions from the key concepts."),
-                    "Flashcards":        (chains["flashcard"],"Extract key terms and definitions."),
-                    "Topic Explanation": (chains["topic"],    user_input),
-                }
-                chain, query = mode_map[mode]
-                result = chain.invoke(query)
-                st.markdown(result)
+                result = chain.invoke(query)  # FIX 4: invoke outside chat_message block first
+        except Exception as e:
+            result = f"⚠️ Error: {str(e)}"
+
+        # Append and render assistant message
         st.session_state.chat_history.append({"role": "assistant", "content": result})
+
+        # FIX 5: rerun so history renders cleanly without duplicates
+        st.rerun()
 
 else:
     st.info("👈 Upload PDFs and click **Build Knowledge Base** to get started.")
