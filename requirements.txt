@@ -7,4 +7,3 @@ langchain-groq
 pypdf
 faiss-cpu
 sentence-transformers
-create_retrieval_chain
