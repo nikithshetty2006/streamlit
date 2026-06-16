@@ -22,7 +22,7 @@ if groq_api_key:
     # LOAD THE PRE-BUILT DATABASE (This replaces the PDF uploader)
     try:
         vectorstore = FAISS.load_local(
-            "faiss_index", 
+            ".", 
             embeddings, 
             allow_dangerous_deserialization=True # Required by LangChain to load .pkl files
         )
